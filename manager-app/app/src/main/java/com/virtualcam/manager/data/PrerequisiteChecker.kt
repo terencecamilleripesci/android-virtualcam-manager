@@ -15,11 +15,10 @@ data class PrerequisiteStatus(
     val lastHookPkg: String? = null,
     val vcamEnabled: Boolean = false,
     val hasVirtualVideo: Boolean = false,
-    /** Live telemetry written by native GL path */
     val decoderFrames: Int = 0,
     val textureId: Long = 0,
     val bindHits: Int = 0,
-    val pathMode: String? = null  // "oes" | "2d" | null
+    val pathMode: String? = null
 ) {
     val allPassed: Boolean
         get() = rootAvailable && magiskPresent && camera1Ready
@@ -56,11 +55,13 @@ class PrerequisiteChecker(
         ).out.firstOrNull()?.trim() == "1"
 
         val hookStatus = RootShell.exec(
-            "cat /data/adb/virtualcam/hook_status 2>/dev/null"
+            "cat /data/adb/virtualcam/hook_status 2>/dev/null || " +
+                "cat /storage/emulated/0/DCIM/Camera1/.vcam_status 2>/dev/null"
         ).out.firstOrNull()?.trim()
 
         val lastPkg = RootShell.exec(
-            "cat /data/adb/virtualcam/last_hook_pkg 2>/dev/null"
+            "cat /data/adb/virtualcam/last_hook_pkg 2>/dev/null || " +
+                "cat /storage/emulated/0/DCIM/Camera1/.vcam_pkg 2>/dev/null"
         ).out.firstOrNull()?.trim()
 
         val enabled = RootShell.exec(
@@ -72,7 +73,8 @@ class PrerequisiteChecker(
         val control = RootShell.exec("mkdir -p /data/adb/virtualcam && echo 1").isSuccess
 
         val frames = RootShell.exec(
-            "cat /data/adb/virtualcam/decoder_frames 2>/dev/null || echo 0"
+            "cat /data/adb/virtualcam/decoder_frames 2>/dev/null || " +
+                "cat /storage/emulated/0/DCIM/Camera1/.vcam_decoder_frames 2>/dev/null || echo 0"
         ).out.firstOrNull()?.trim()?.toIntOrNull() ?: 0
 
         val texId = RootShell.exec(
