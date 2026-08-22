@@ -1,6 +1,6 @@
 id=virtualcam_manager
 name=VirtualCam Manager
-version=v2.0.3-probe1
-versionCode=2006
+version=v2.1.0
+versionCode=2100
 author=smithluke874
-description=Pure Magisk+Zygisk VirtualCam (NO LSPosed). v2 GL OES/2D path (AHardwareBuffer+EGLImage) + MediaCodec + live telemetry + failure doctor/probe + SurfaceTexture scaffolding. Device verification required.
+description=Pure Magisk+Zygisk VirtualCam (NO LSPosed). Camera1 surface swap + MediaPlayer + GL/OES fallback. Flash zip, enable Zygisk, install Manager APK.

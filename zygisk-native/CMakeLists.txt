@@ -12,6 +12,7 @@ set(VCAM_PAGE_FLAGS "-Wl,-z,max-page-size=16384")
 add_library(virtualcam SHARED
     jni/main.cpp
     jni/gl_hooks.cpp
+    jni/jni_camera_hooks.cpp
 )
 
 target_include_directories(virtualcam PRIVATE
