@@ -3,9 +3,9 @@
 **Pure Magisk module + single controller APK**  
 **NO LSPosed / NO Xposed manager.**
 
-> **v2.0.2-dev Phase 2.1:** Native OpenGL interception (ShadowHook) + AMediaCodec + **AHardwareBuffer → EGLImage → `GL_TEXTURE_EXTERNAL_OES`** (with 2D fallback). Live telemetry on Home (Frames / Tex / Binds / OES|2D). **Device verification required** before claiming a working camera spoof.
+> **v2.1.0:** Camera1 surface swap (original VCAM algorithm) + MediaPlayer on the app preview surface, with GL/OES as fallback. Still needs a check on a real rooted phone.
 
-## Status (v2.0.2-dev)
+## Status (v2.1.0)
 
 | Layer | Status |
 |-------|--------|
@@ -13,13 +13,13 @@
 | APK one-tap enable / import | **Working** |
 | Dual video path (Camera1 + `/data/adb/virtualcam`) | **Working** |
 | Zygisk `.so` multi-ABI + **16 KB page size** | **CI builds** |
-| ShadowHook `glBindTexture` + `glDrawArrays` + `glDrawElements` | **Scaffold** — needs device test |
-| AMediaCodec continuous decode (loop + FPS pacing) | **Scaffold** |
-| GL 2D RGB upload (fallback) | **Scaffold** |
-| **OES path: AHardwareBuffer + EGLImageKHR** | **Scaffold (Phase 2.1)** — needs device test |
-| Live telemetry (Frames / Tex / Binds / path mode) | **Working** |
-| Test-pattern bootstrap | **Scaffold** |
-| ANativeWindow / SurfaceTexture MediaCodec output | **Not started** |
+| Camera1 `setPreviewTexture` / `setPreviewDisplay` swap | **New in 2.1.0** — device test required |
+| MediaPlayer loop on stolen surface | **New in 2.1.0** — device test required |
+| ShadowHook staged into app `code_cache` | **New in 2.1.0** |
+| Status files mirrored to `DCIM/Camera1/.vcam_*` | **New in 2.1.0** |
+| ShadowHook `glBindTexture` + draw | Fallback |
+| AMediaCodec + OES / 2D upload | Fallback |
+| Camera2 session surface rewrite | **Not done** |
 | Real apps show virtual feed on device | **Not verified** |
 
 ## Download
@@ -27,7 +27,7 @@
 [Actions ← latest green run ← Artifacts](https://github.com/smithluke874/Android-VirtualCam-Manager/actions)
 
 - `VirtualCam-Manager-debug` / `release`
-- `VirtualCam-Manager-Magisk-v2.0.2-dev`
+- `VirtualCam-Manager-Magisk-v2.1.0`
 
 ## Install (3 steps)
 
@@ -36,54 +36,34 @@
 3. On **Home**:
    - Tap **Pick video or image**
    - Flip **VirtualCam ON**
-   - Open any camera app — watch **Frames / Binds** and **OES** or **2D** chip
+   - Open a **Camera1** app first (Open Camera, many stock cameras)
+   - Watch status: `texture_swapped` → `surface_playing`
 
-## What to expect right now
+## What to expect
 
-Phase 2.1 prefers a real **EXTERNAL_OES** texture fed by `AHardwareBuffer` + `eglGetNativeClientBufferANDROID` + `eglCreateImageKHR` + `glEGLImageTargetTexture2DOES`. That is what `samplerExternalOES` shaders expect.
+v2.1 prefers the original method:
 
-If EGL extensions are missing on the device, the module falls back to `GL_TEXTURE_2D` and reports `oes_fallback_2d`. Rising **Frames** and **Binds** mean the native path is alive. A visible virtual feed in a real camera app is still **not claimed** until verified on device.
+1. App calls `Camera.setPreviewTexture(appTexture)`
+2. Module gives the real camera a **dummy** SurfaceTexture
+3. `MediaPlayer` loops `virtual.mp4` onto the **app** surface
+
+Camera2 / CameraX apps that never touch `android.hardware.Camera` will still show the real sensor until the Camera2 session path lands.
 
 ## Hook / path status values
 
 | Status | Meaning |
 |--------|--------|
 | `gate_off` / `no_video` | Control plane closed |
-| `gl_installing` / `gl_hooked*` / `gl_ready` | Hooks installing or installed |
-| `gl_hook_fail` / `gl_hook_pending_shadowhook` | Hook incomplete |
-| `decoder_*` / `decoder_frames:WxH#N` | MediaCodec active |
-| `gl_tex_created` / `gl_tex_created_oes` | Virtual texture allocated |
-| `oes_ready` | OES + EGLImage path in use |
-| `oes_fallback_2d` | Fell back to 2D RGB upload |
-| `gl_bind_redir:tex#N` | Bind redirect hit |
+| `hooks_installing` / `hooks_ready` | Both JNI + GL attempted |
+| `jni_hooks_ready` / `jni_camera_patched` | RegisterNatives intercept is in |
+| `texture_swapped` / `display_swapped` | Dummy surface given to Camera1 |
+| `surface_playing` | MediaPlayer is on the app surface |
+| `surface_player_fail` | Swap happened, playback failed |
+| `gl_bind_redir:tex#N` | GL bind redirect hit |
+| `oes_ready` / `oes_fallback_2d` | GL upload path |
 
-## Architecture
+## Next
 
-```
-Manager APK → /data/adb/virtualcam/{enabled,virtual.mp4,hook_status,path_mode,...}
-                    ↓
-             Zygisk libvirtualcam.so
-                    ↓
-        ShadowHook → glBindTexture / glDraw*
-                    ↓
-        AMediaCodec → YUV→RGB
-                    ↓
-   Prefer: AHardwareBuffer → EGLImage → EXTERNAL_OES
-   Fallback: glTexImage2D (GL_TEXTURE_2D)
-                    ↓
-        Redirect EXTERNAL_OES / 2D texture ID
-```
-
-## Roadmap (realistic)
-
-**Next few versions (2.1–2.3)**  
-- Harden OES path across OEMs (more EGL edge cases)  
-- Optional SurfaceTexture / ANativeWindow MediaCodec output  
-- Documented smoke tests on real apps  
-
-**Many versions out (3.x+)**  
-- Camera2/CameraX coverage on multiple OEMs  
-- Optional hybrid NV21 / VirtualDisplay fallbacks  
-- Long-session stability and clear failure modes  
-
-Until a real camera app shows the virtual video on a physical device, status remains **scaffold / needs verification**.
+- Device smoke test on latest Magisk/Zygisk (Open Camera first)
+- Camera2 output surface rewrite
+- GitHub Release so artifacts are not Actions-only
