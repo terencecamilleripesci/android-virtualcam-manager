@@ -2,53 +2,48 @@ name: Build APK + Magisk Module
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-apk:
     name: Assemble Debug & Release APK
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Verify manager sources (no patch assemble)
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Verify manager sources
         run: |
           test -f manager-app/app/src/main/java/com/virtualcam/manager/ui/screens/FailureDoctorCard.kt
           test -f manager-app/app/src/main/java/com/virtualcam/manager/data/PrerequisiteChecker.kt
           grep -n 'versionName' manager-app/app/build.gradle.kts
-          echo "manager sources ready"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: 'temurin'
+          distribution: temurin
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
 
-      - name: Accept Android licenses
-        run: yes | sdkmanager --licenses || true
-
-      - name: Setup Gradle
+      - name: Setup Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Create Gradle Wrapper
-        working-directory: manager-app
-        run: |
-          if [ ! -f gradlew ]; then
-            gradle wrapper --gradle-version 8.9 --distribution-type bin
-          fi
-          chmod +x gradlew
+        with:
+          gradle-version: '8.9'
 
       - name: Build Debug APK
         working-directory: manager-app
-        run: ./gradlew assembleDebug --stacktrace --no-daemon
-
-      - name: Build Release APK
-        working-directory: manager-app
-        run: ./gradlew assembleRelease --stacktrace --no-daemon
+        run: gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -56,6 +51,10 @@ jobs:
           name: VirtualCam-Manager-debug
           path: manager-app/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Build Release APK
+        working-directory: manager-app
+        run: gradle assembleRelease --stacktrace --no-daemon
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
@@ -67,8 +66,10 @@ jobs:
   build-magisk:
     name: Package Magisk Module (+ Zygisk GL v2)
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -76,33 +77,35 @@ jobs:
         with:
           ndk-version: r26b
           add-to-path: true
-        continue-on-error: true
 
       - name: Fetch zygisk.hpp
         run: |
           mkdir -p zygisk-native/jni
-          curl -fsSL -o zygisk-native/jni/zygisk.hpp \
+          curl --fail --show-error --silent --location --retry 3 \
+            -o zygisk-native/jni/zygisk.hpp \
             https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp
 
-      - name: Fetch ShadowHook runtime libs (optional)
+      - name: Fetch ShadowHook runtime libraries
         run: |
-          mkdir -p /tmp/sh-aar magisk-module/libs
-          VER=1.0.10
-          URL="https://repo1.maven.org/maven2/com/bytedance/android/shadowhook/${VER}/shadowhook-${VER}.aar"
-          if curl -fsSL -o /tmp/sh-aar/sh.aar "$URL"; then
-            cd /tmp/sh-aar && unzip -oq sh.aar
-            for ABI in arm64-v8a armeabi-v7a x86_64; do
-              if [ -f jni/$ABI/libshadowhook.so ]; then
-                mkdir -p $GITHUB_WORKSPACE/magisk-module/libs/$ABI
-                cp jni/$ABI/libshadowhook.so $GITHUB_WORKSPACE/magisk-module/libs/$ABI/
-                echo "ShadowHook $ABI $(stat -c%s jni/$ABI/libshadowhook.so) bytes"
-              fi
-            done
-          else
-            echo "WARN: could not download ShadowHook AAR — hooks will report pending"
-          fi
+          set -euo pipefail
+          SHADOWHOOK_DIR="$(mktemp -d)"
+          VERSION=1.0.10
+          URL="https://repo1.maven.org/maven2/com/bytedance/android/shadowhook/${VERSION}/shadowhook-${VERSION}.aar"
 
-      - name: Verify v2.1 native sources
+          curl --fail --show-error --silent --location --retry 3 \
+            -o "$SHADOWHOOK_DIR/shadowhook.aar" "$URL"
+
+          unzip -oq "$SHADOWHOOK_DIR/shadowhook.aar" -d "$SHADOWHOOK_DIR"
+
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            SOURCE="$SHADOWHOOK_DIR/jni/$ABI/libshadowhook.so"
+            DESTINATION="$GITHUB_WORKSPACE/magisk-module/libs/$ABI"
+            test -s "$SOURCE"
+            mkdir -p "$DESTINATION"
+            cp "$SOURCE" "$DESTINATION/libshadowhook.so"
+          done
+
+      - name: Verify native sources
         run: |
           test -f zygisk-native/jni/main.cpp
           test -f zygisk-native/jni/gl_hooks.cpp
@@ -113,52 +116,57 @@ jobs:
           grep -n 'install_jni_camera_hooks\|2\.1' zygisk-native/jni/main.cpp
           grep -n 'jni_camera_hooks' zygisk-native/CMakeLists.txt
           grep -n '2\.1' magisk-module/module.prop
-          echo "native sources verified"
 
-      - name: Build Zygisk native with CMake (GL + MediaCodec)
-        if: steps.setup-ndk.outcome == 'success'
+      - name: Build Zygisk native libraries
         working-directory: zygisk-native
+        env:
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          export NDK=${{ steps.setup-ndk.outputs.ndk-path }}
+          set -euo pipefail
           mkdir -p ../magisk-module/zygisk
+
           for ABI in arm64-v8a armeabi-v7a x86_64; do
-            echo "=== Building $ABI ==="
-            BUILD_DIR=build-$ABI
-            cmake -B $BUILD_DIR \
-              -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
-              -DANDROID_ABI=$ABI \
+            echo "Building $ABI"
+            BUILD_DIR="build-$ABI"
+
+            cmake -S . -B "$BUILD_DIR" \
+              "-DCMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake" \
+              "-DANDROID_ABI=$ABI" \
               -DANDROID_PLATFORM=android-26 \
               -DANDROID_STL=c++_static \
-              -DCMAKE_BUILD_TYPE=Release \
-              || { echo "cmake configure failed for $ABI"; continue; }
-            cmake --build $BUILD_DIR -j$(nproc) \
-              || { echo "cmake build failed for $ABI"; continue; }
-            SO=$(find $BUILD_DIR -name "libvirtualcam.so" | head -1)
-            if [ -n "$SO" ] && [ -f "$SO" ]; then
-              case $ABI in
-                arm64-v8a)   OUT=arm64-v8a.so ;;
-                armeabi-v7a) OUT=armeabi-v7a.so ;;
-                x86_64)      OUT=x86_64.so ;;
-              esac
-              cp "$SO" ../magisk-module/zygisk/$OUT
-              echo "Packaged $OUT ($(stat -c%s ../magisk-module/zygisk/$OUT) bytes)"
-            else
-              echo "No libvirtualcam.so for $ABI"
-            fi
-          done
-          ls -la ../magisk-module/zygisk/ || true
+              -DCMAKE_BUILD_TYPE=Release
 
-      - name: Package Magisk zip (v2.1.0)
+            cmake --build "$BUILD_DIR" --parallel "$(nproc)"
+
+            SO="$(find "$BUILD_DIR" -type f -name libvirtualcam.so -print -quit)"
+
+            if [ -z "$SO" ]; then
+              echo "::error::Missing libvirtualcam.so for $ABI"
+              exit 1
+            fi
+
+            test -s "$SO"
+            cp "$SO" "../magisk-module/zygisk/$ABI.so"
+          done
+
+      - name: Verify packaged libraries
         run: |
-          if [ -f magisk-module/libs/arm64-v8a/libshadowhook.so ]; then
-            cp magisk-module/libs/arm64-v8a/libshadowhook.so magisk-module/libshadowhook.so
-          fi
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            test -s "magisk-module/zygisk/$ABI.so"
+            test -s "magisk-module/libs/$ABI/libshadowhook.so"
+          done
+
+      - name: Package Magisk ZIP
+        run: |
+          cp magisk-module/libs/arm64-v8a/libshadowhook.so \
+            magisk-module/libshadowhook.so
+
           cd magisk-module
           zip -r ../VirtualCam-Manager-Magisk-v2.1.0.zip .
-          ls -la ../VirtualCam-Manager-Magisk-v2.1.0.zip
-          unzip -l ../VirtualCam-Manager-Magisk-v2.1.0.zip | head -40
 
-      - name: Upload Magisk zip
+          unzip -t ../VirtualCam-Manager-Magisk-v2.1.0.zip
+
+      - name: Upload Magisk ZIP
         uses: actions/upload-artifact@v4
         with:
           name: VirtualCam-Manager-Magisk-v2.1.0
