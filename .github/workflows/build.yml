@@ -56,15 +56,15 @@ jobs:
         working-directory: manager-app
         run: gradle assembleRelease --stacktrace --no-daemon
 
-      - name: Upload Release APK
+      - name: Upload Unsigned Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: VirtualCam-Manager-release
+          name: VirtualCam-Manager-release-unsigned
           path: manager-app/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
   build-magisk:
-    name: Package Magisk Module (+ Zygisk GL v2)
+    name: Build and Package Magisk Module
     runs-on: ubuntu-latest
 
     steps:
@@ -78,55 +78,75 @@ jobs:
           ndk-version: r26b
           add-to-path: true
 
-      - name: Fetch zygisk.hpp
+      - name: Fetch Zygisk header
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p zygisk-native/jni
-          curl --fail --show-error --silent --location --retry 3 \
+
+          curl --fail --show-error --silent --location \
+            --retry 3 \
             -o zygisk-native/jni/zygisk.hpp \
             https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp
 
-      - name: Fetch ShadowHook runtime libraries
+          test -s zygisk-native/jni/zygisk.hpp
+
+      - name: Fetch ShadowHook ARM libraries
+        shell: bash
         run: |
           set -euo pipefail
+
           SHADOWHOOK_DIR="$(mktemp -d)"
-          VERSION=1.0.10
-          URL="https://repo1.maven.org/maven2/com/bytedance/android/shadowhook/${VERSION}/shadowhook-${VERSION}.aar"
+          VERSION="1.0.10"
+          URL="https://repo.maven.apache.org/maven2/com/bytedance/android/shadowhook/${VERSION}/shadowhook-${VERSION}.aar"
 
-          curl --fail --show-error --silent --location --retry 3 \
-            -o "$SHADOWHOOK_DIR/shadowhook.aar" "$URL"
+          curl --fail --show-error --silent --location \
+            --retry 3 \
+            -o "$SHADOWHOOK_DIR/shadowhook.aar" \
+            "$URL"
 
-          unzip -oq "$SHADOWHOOK_DIR/shadowhook.aar" -d "$SHADOWHOOK_DIR"
+          unzip -oq "$SHADOWHOOK_DIR/shadowhook.aar" \
+            -d "$SHADOWHOOK_DIR"
 
-          for ABI in arm64-v8a armeabi-v7a x86_64; do
+          for ABI in arm64-v8a armeabi-v7a; do
             SOURCE="$SHADOWHOOK_DIR/jni/$ABI/libshadowhook.so"
             DESTINATION="$GITHUB_WORKSPACE/magisk-module/libs/$ABI"
-            test -s "$SOURCE"
+
+            if [ ! -s "$SOURCE" ]; then
+              echo "::error::Missing ShadowHook library for $ABI"
+              exit 1
+            fi
+
             mkdir -p "$DESTINATION"
             cp "$SOURCE" "$DESTINATION/libshadowhook.so"
           done
 
       - name: Verify native sources
+        shell: bash
         run: |
+          set -euo pipefail
+
+          test -f zygisk-native/CMakeLists.txt
           test -f zygisk-native/jni/main.cpp
           test -f zygisk-native/jni/gl_hooks.cpp
           test -f zygisk-native/jni/gl_hooks.h
           test -f zygisk-native/jni/jni_camera_hooks.cpp
           test -f zygisk-native/jni/jni_camera_hooks.h
           test -f zygisk-native/jni/status_io.h
-          grep -n 'install_jni_camera_hooks\|2\.1' zygisk-native/jni/main.cpp
-          grep -n 'jni_camera_hooks' zygisk-native/CMakeLists.txt
-          grep -n '2\.1' magisk-module/module.prop
+          test -f magisk-module/module.prop
 
-      - name: Build Zygisk native libraries
+          grep -n 'jni_camera_hooks' zygisk-native/CMakeLists.txt
+
+      - name: Build Zygisk ARM libraries
         working-directory: zygisk-native
+        shell: bash
         env:
           NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
           mkdir -p ../magisk-module/zygisk
 
-          for ABI in arm64-v8a armeabi-v7a x86_64; do
-            echo "Building $ABI"
+          for ABI in arm64-v8a armeabi-v7a; do
             BUILD_DIR="build-$ABI"
 
             cmake -S . -B "$BUILD_DIR" \
@@ -138,32 +158,37 @@ jobs:
 
             cmake --build "$BUILD_DIR" --parallel "$(nproc)"
 
-            SO="$(find "$BUILD_DIR" -type f -name libvirtualcam.so -print -quit)"
+            SO="$(find "$BUILD_DIR" -type f \
+              -name libvirtualcam.so -print -quit)"
 
-            if [ -z "$SO" ]; then
-              echo "::error::Missing libvirtualcam.so for $ABI"
+            if [ -z "$SO" ] || [ ! -s "$SO" ]; then
+              echo "::error::Missing compiled libvirtualcam.so for $ABI"
               exit 1
             fi
 
-            test -s "$SO"
             cp "$SO" "../magisk-module/zygisk/$ABI.so"
           done
 
       - name: Verify packaged libraries
+        shell: bash
         run: |
-          for ABI in arm64-v8a armeabi-v7a x86_64; do
+          set -euo pipefail
+
+          for ABI in arm64-v8a armeabi-v7a; do
             test -s "magisk-module/zygisk/$ABI.so"
             test -s "magisk-module/libs/$ABI/libshadowhook.so"
           done
 
-      - name: Package Magisk ZIP
-        run: |
           cp magisk-module/libs/arm64-v8a/libshadowhook.so \
             magisk-module/libshadowhook.so
 
+      - name: Package Magisk ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
           cd magisk-module
           zip -r ../VirtualCam-Manager-Magisk-v2.1.0.zip .
-
           unzip -t ../VirtualCam-Manager-Magisk-v2.1.0.zip
 
       - name: Upload Magisk ZIP
